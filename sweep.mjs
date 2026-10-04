@@ -81,6 +81,7 @@ const STATE_WORDS = /no longer in this room|has left\.|won in [^\n]{0,30}|Your t
 const KNOWN_SHARED_ERRORS = [
   [/Game hasn't started yet/, 'a tap landed in the countdown, Chromium too'],
   [/Bad gameSession/, 'a move was sent while leaving, Chromium too'],
+  [/Canvas desync/, 'follows a Paint Job stroke refused in the countdown, Chromium too'],
 ];
 
 /** Collects errors on the page from now on. A full page load drops it, so it goes in after every load. */
