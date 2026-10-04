@@ -48,6 +48,13 @@ const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf';
 /** A room drops a player 15 s after they leave. The next game starts after that, so the old room can't clear the new room's status. */
 const ROOM_DROP_WAIT_MS = 17_000;
 const MAC_WINDOW = {width: 1440, height: 900};
+/** A WebDriver command that takes longer than this is treated as stuck. Starting Safari in the iOS Simulator can take minutes, so that gets its own limit. */
+const COMMAND_TIMEOUT_MS = 90_000;
+const SESSION_START_TIMEOUT_MS = 300_000;
+/** Commands slower than this are logged by name, so a slow or stuck step is easy to find. */
+const SLOW_COMMAND_MS = 15_000;
+/** W3C WebDriver time limits, in ms: a page load that takes longer returns early, and the page keeps loading. */
+const DRIVER_TIMEOUTS = {pageLoad: 60_000, script: 30_000, implicit: 0};
 /** Shown instead of Start Game when a game is in Supporter early access. A guest can't start these. */
 const SUPPORTER_ONLY_TEXT = 'Only Supporters can create a room';
 /** Words worth recording when the page shows them after the taps. */
@@ -66,7 +73,7 @@ const HOOK_SCRIPT = `
   if (!window.__safariSweepErrors) {
     window.__safariSweepErrors = [];
     const push = (kind, text) => window.__safariSweepErrors.push(kind + ': ' + String(text).slice(0, 600));
-    window.addEventListener('error', (event) => push('error', (event.error && event.error.stack) || event.message), true);
+    window.addEventListener('error', (event) => push('error', [event.message, event.filename && event.filename + ':' + event.lineno + ':' + event.colno, event.error && event.error.stack].filter(Boolean).join(' | ')), true);
     window.addEventListener('unhandledrejection', (event) => push('rejection', (event.reason && (event.reason.stack || event.reason.message)) || event.reason));
     const originalError = console.error;
     console.error = function (...args) {
@@ -106,7 +113,14 @@ try {
     appendFileSync(RESULTS_FILE, JSON.stringify(result) + '\n');
     console.log(`[safari-games] ${TARGET} ${slug}: ${describeProblems(result).join('; ') || 'ok'}`);
     if (result.sessionLost) {
-      await session.restart();
+      try {
+        await session.restart();
+      } catch (error) {
+        // safaridriver keeps the stuck session paired with Safari, so no new session can start.
+        console.log(`[safari-games] ${TARGET}: could not start a new Safari session, skipping the other games: ${error.message}`);
+        results.push({slug: 'the remaining games', failed: `not run, Safari stayed stuck: ${error.message.slice(0, 200)}`, target: TARGET, browser: session.browser});
+        break;
+      }
     }
   }
 } finally {
@@ -157,7 +171,7 @@ async function playGame(slug) {
     await sleep(ROOM_DROP_WAIT_MS);
   } catch (error) {
     // Safari's page or the whole session died: record it, and the caller starts a new session.
-    if (/invalid session id|no such window|session.*(deleted|terminated|not created)|ECONNREFUSED|fetch failed/i.test(String(error.message))) {
+    if (/invalid session id|no such window|session.*(deleted|terminated|not created)|ECONNREFUSED|fetch failed|stuck/i.test(String(error.message))) {
       result.sessionLost = String(error.message).split('\n')[0].slice(0, 300);
       return finish(result, startedAt);
     }
@@ -368,6 +382,7 @@ async function startSession() {
     const value = await callDriver('POST', '/session', {capabilities: {alwaysMatch: capabilities}});
     sessionId = value.sessionId;
     browser = `${value.capabilities?.browserName ?? '?'} ${value.capabilities?.browserVersion ?? '?'}`;
+    await callSession('POST', '/timeouts', DRIVER_TIMEOUTS).catch((error) => console.warn(`[safari-games] could not set the driver time limits: ${error.message}`));
     if (!isSimulator) {
       await callSession('POST', '/window/rect', MAC_WINDOW).catch((error) => console.warn(`[safari-games] could not set the window size: ${error.message}`));
     }
@@ -377,7 +392,17 @@ async function startSession() {
     get browser() {
       return browser;
     },
-    go: (url) => callSession('POST', '/url', {url}),
+    async go(url) {
+      try {
+        await callSession('POST', '/url', {url});
+      } catch (error) {
+        if (!/timeout/i.test(error.message) || /stuck/.test(error.message)) {
+          throw error;
+        }
+        // The page took longer than the page-load limit. It keeps loading, so carry on with it.
+        console.log(`[safari-games] ${url} took over ${DRIVER_TIMEOUTS.pageLoad / 1000} s to load, carrying on`);
+      }
+    },
     run: (script, ...args) => callSession('POST', '/execute/sync', {script, args}),
     async saveShot(name) {
       const base64 = await callSession('GET', '/screenshot');
@@ -436,17 +461,34 @@ async function startSession() {
 
 /** Sends one WebDriver command and returns its value. Rejects with the driver's error and message. */
 async function callDriver(method, route, body) {
-  const response = await fetch(WEBDRIVER_URL + route, {
-    method,
-    headers: {'Content-Type': 'application/json'},
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const timeoutMs = route === '/session' ? SESSION_START_TIMEOUT_MS : COMMAND_TIMEOUT_MS;
+  const startedAt = performance.now();
+  let response;
+  try {
+    response = await fetch(WEBDRIVER_URL + route, {
+      method,
+      headers: {'Content-Type': 'application/json'},
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw new Error(error.name === 'TimeoutError' ? `${method} ${commandName(route)} got no answer within ${timeoutMs / 1000} s (stuck)` : `${method} ${commandName(route)} failed: ${error.message}`);
+  }
+  const elapsedMs = performance.now() - startedAt;
+  if (elapsedMs > SLOW_COMMAND_MS) {
+    console.log(`[safari-games] slow WebDriver command: ${method} ${commandName(route)} took ${Math.round(elapsedMs / 1000)} s`);
+  }
   const text = await response.text();
   const value = text ? JSON.parse(text).value : null;
   if (!response.ok) {
     throw new Error(`${method} ${route} answered HTTP ${response.status}: ${value?.error ?? ''} ${value?.message ?? text.slice(0, 300)}`);
   }
   return value;
+}
+
+/** The command part of a WebDriver route, without the session and element ids (e.g. "/element/click"). */
+function commandName(route) {
+  return route.replace(/^\/session\/[^/]+/, '').replace(/\/element\/[^/]+/, '/element') || '/session';
 }
 
 function sleep(ms) {

@@ -73,14 +73,19 @@ jobs:
           jq -r --arg udid "$udid" '.[] | select(.udid == $udid) | "Using \(.name) on \(.runtime | sub(".*SimRuntime."; ""))"' <<< "$devices"
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b
+          # simctl boots the device with no window. Open it in the Simulator app too, so taps
+          # from safaridriver have a screen to land on.
+          open -a Simulator --args -CurrentDeviceUDID "$udid"
           echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
 
       - name: Start safaridriver
         run: |
+          # The log goes with the results, so a failed run uploads it.
+          mkdir -p "$RUNNER_TEMP/safari-results"
           # Already on in GitHub's image. Turning it on again costs nothing and keeps working if
           # the image changes.
           sudo safaridriver --enable
-          nohup safaridriver -p 4444 > "$RUNNER_TEMP/safaridriver.log" 2>&1 &
+          nohup safaridriver -p 4444 > "$RUNNER_TEMP/safari-results/safaridriver.log" 2>&1 &
           for attempt in $(seq 1 30); do
             if curl -sf http://localhost:4444/status > /dev/null; then
               exit 0
@@ -88,7 +93,7 @@ jobs:
             sleep 1
           done
           echo "::error::safaridriver did not answer on port 4444 within 30 s."
-          cat "$RUNNER_TEMP/safaridriver.log"
+          cat "$RUNNER_TEMP/safari-results/safaridriver.log"
           exit 1
 
       - name: Play the games
@@ -98,6 +103,10 @@ jobs:
           GAMES: ${{ inputs.games }}
           OUT_DIR: ${{ runner.temp }}/safari-results
         run: node sweep.mjs
+
+      - name: Save what the iOS Simulator shows
+        if: failure() && env.SIMULATOR_UDID != ''
+        run: xcrun simctl io "$SIMULATOR_UDID" screenshot "$RUNNER_TEMP/safari-results/simulator-at-failure.png"
 
       - name: Upload screenshots and results
         if: always()
