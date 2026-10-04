@@ -1,0 +1,109 @@
+name: Safari games check
+
+# Plays every live game on foony.com in real Safari, on GitHub's Mac machines: Mac Safari and
+# iOS Simulator Safari (iPhone and iPad). Each game is started against bots in a private room,
+# tapped around, screenshotted and checked for crashes, the crash screen, sideways scroll and
+# page errors. The script is sweep.mjs.
+#
+# Manual start only: Actions > Safari games check > Run workflow. This repo is public, so GitHub's
+# Mac machines cost nothing here. Keep it public, or every Mac minute bills the owner's account.
+# One target takes about 30 minutes for all games.
+#
+# Results: each target uploads an artifact with screenshots and results.jsonl, and the run's
+# summary page shows a table per target.
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: '"mac" for Mac Safari, or iOS Simulator device names, comma separated. A name that is not exact picks the first device that starts with it.'
+        default: 'mac,iPhone SE,iPhone 16,iPhone 16 Pro Max,iPad mini'
+      games:
+        description: '"all" for every game linked from foony.com/games, or slugs, comma separated (e.g. chess,ludo)'
+        default: 'all'
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    name: List the targets
+    outputs:
+      targets: ${{ steps.split.outputs.targets }}
+    steps:
+      - id: split
+        env:
+          TARGETS: ${{ inputs.targets }}
+        run: echo "targets=$(jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))' <<< "$TARGETS")" >> "$GITHUB_OUTPUT"
+
+  sweep:
+    needs: plan
+    name: Safari on ${{ matrix.target }}
+    # Pinned, not macos-latest: the iOS Simulator device names and Safari versions come with the
+    # image's Xcode, so a silent image change would rename the targets.
+    runs-on: macos-15
+    # A full run of all games takes about 30 minutes. The limit stops a stuck Safari from holding a
+    # Mac machine for GitHub's default of 6 hours.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Boot the iOS Simulator
+        if: matrix.target != 'mac'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          # The exact name on the newest iOS runtime first, else the first name that starts with it.
+          devices=$(xcrun simctl list devices available --json | jq -c '[.devices | to_entries[] | select(.key | test("iOS")) | .key as $runtime | .value[] | {name, udid, runtime: $runtime}] | sort_by(.runtime | capture("iOS-(?<version>[0-9-]+)").version | split("-") | map(tonumber)) | reverse')
+          udid=$(jq -r --arg name "$TARGET" '(map(select(.name == $name)) + map(select(.name | ascii_downcase | startswith($name | ascii_downcase))))[0].udid // empty' <<< "$devices")
+          if [ -z "$udid" ]; then
+            echo "::error::No iOS Simulator matches \"$TARGET\". Pick one of these names:"
+            jq -r '.[] | "\(.name) (\(.runtime | sub(".*SimRuntime."; "")))"' <<< "$devices" | sort -u
+            exit 1
+          fi
+          jq -r --arg udid "$udid" '.[] | select(.udid == $udid) | "Using \(.name) on \(.runtime | sub(".*SimRuntime."; ""))"' <<< "$devices"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+
+      - name: Start safaridriver
+        run: |
+          # Already on in GitHub's image. Turning it on again costs nothing and keeps working if
+          # the image changes.
+          sudo safaridriver --enable
+          nohup safaridriver -p 4444 > "$RUNNER_TEMP/safaridriver.log" 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl -sf http://localhost:4444/status > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::safaridriver did not answer on port 4444 within 30 s."
+          cat "$RUNNER_TEMP/safaridriver.log"
+          exit 1
+
+      - name: Play the games
+        env:
+          WEBDRIVER_URL: http://localhost:4444
+          TARGET: ${{ matrix.target }}
+          GAMES: ${{ inputs.games }}
+          OUT_DIR: ${{ runner.temp }}/safari-results
+        run: node sweep.mjs
+
+      - name: Upload screenshots and results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: safari ${{ matrix.target }}
+          path: ${{ runner.temp }}/safari-results
+          retention-days: 14
+          if-no-files-found: warn
