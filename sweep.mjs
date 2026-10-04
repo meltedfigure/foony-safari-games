@@ -92,11 +92,21 @@ const HOOK_SCRIPT = `
         sessionStorage.setItem('__safariSweepPagehide', location.pathname + location.hash + '; history calls: ' + (window.__safariSweepNavigations.slice(-3).join(' | ') || 'none'));
       } catch (error) {}
     });
+    // Safari throws once a page makes too many history calls in a short time (Chrome drops them
+    // quietly), and Foony's router then loads the page fresh. So count every call and note refusals.
+    window.__safariSweepHistory = {calls: 0, refused: []};
     for (const name of ['pushState', 'replaceState']) {
       const original = history[name];
       history[name] = function (...args) {
+        window.__safariSweepHistory.calls++;
         window.__safariSweepNavigations.push(name + ' ' + String(args[2]) + ' from ' + String(new Error().stack).split('\\n').slice(1, 4).join(' < '));
-        return original.apply(this, args);
+        try {
+          return original.apply(this, args);
+        } catch (error) {
+          window.__safariSweepHistory.refused.push(name + ' refused after ' + window.__safariSweepHistory.calls + ' calls: ' + String(error).slice(0, 150));
+          window.__safariSweepNavigations.push('REFUSED ' + name + ': ' + String(error).slice(0, 150));
+          throw error;
+        }
       };
     }
     addEventListener('popstate', () => window.__safariSweepNavigations.push('popstate (back or forward) to ' + location.pathname + location.hash));
@@ -152,6 +162,8 @@ const SUMMARY_SCRIPT = `
       return Math.round(rect.width) + 'x' + Math.round(rect.height);
     }).filter((size) => size !== '0x0'),
     overflowX: document.documentElement.scrollWidth - innerWidth,
+    historyCalls: window.__safariSweepHistory ? window.__safariSweepHistory.calls : null,
+    historyRefused: window.__safariSweepHistory ? window.__safariSweepHistory.refused : [],
   };
 `;
 
@@ -445,6 +457,9 @@ function describeProblems(result) {
   if (result.crashScreen) {
     problems.push('crash screen');
   }
+  if ((result.historyRefused ?? []).length > 0) {
+    problems.push(`Safari refused a history call (Foony's router then reloads the page): ${result.historyRefused[0]}`);
+  }
   if (result.overflowX > 0) {
     problems.push(`page scrolls sideways by ${result.overflowX}px`);
   }
@@ -462,11 +477,11 @@ function describeProblems(result) {
 
 /** Builds the markdown summary: one row per game, then every page error with known ones marked. */
 function buildSummary(gameResults) {
-  const lines = [`## ${TARGET} (${session.browser})`, '', '| Game | Result | Room | Taps | Errors |', '| --- | --- | --- | --- | --- |'];
+  const lines = [`## ${TARGET} (${session.browser})`, '', '| Game | Result | Room | Taps | History calls | Errors |', '| --- | --- | --- | --- | --- | --- |'];
   for (const result of gameResults) {
     const problems = describeProblems(result);
     const outcome = problems.length > 0 ? `❌ ${problems.join('; ')}` : result.supporterOnly ? 'Supporter only (guest can\'t start)' : '✅ ok';
-    lines.push(`| ${result.slug} | ${outcome} | ${result.roomSeconds == null ? '-' : result.roomSeconds + ' s'} | ${result.taps ?? '-'} | ${(result.errors ?? []).length} |`);
+    lines.push(`| ${result.slug} | ${outcome} | ${result.roomSeconds == null ? '-' : result.roomSeconds + ' s'} | ${result.taps ?? '-'} | ${result.historyCalls ?? '-'} | ${(result.errors ?? []).length} |`);
   }
   const errorLines = gameResults.flatMap((result) => (result.errors ?? []).map((error) => {
     const known = KNOWN_SHARED_ERRORS.find(([pattern]) => pattern.test(error));
