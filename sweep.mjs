@@ -51,6 +51,7 @@ const MAC_WINDOW = {width: 1440, height: 900};
 /** A WebDriver command that takes longer than this is treated as stuck. Starting Safari in the iOS Simulator can take minutes, so that gets its own limit. */
 const COMMAND_TIMEOUT_MS = 90_000;
 const SESSION_START_TIMEOUT_MS = 300_000;
+const SESSION_START_ATTEMPTS = 4;
 /** Commands slower than this are logged by name, so a slow or stuck step is easy to find. */
 const SLOW_COMMAND_MS = 15_000;
 /** W3C WebDriver time limits, in ms: a page load that takes longer returns early, and the page keeps loading. */
@@ -379,12 +380,29 @@ async function startSession() {
   let canUsePointerActions = true;
   const callSession = (method, route, body) => callDriver(method, `/session/${sessionId}${route}`, body);
   async function open() {
-    const value = await callDriver('POST', '/session', {capabilities: {alwaysMatch: capabilities}});
+    const value = await openWithRetries();
     sessionId = value.sessionId;
     browser = `${value.capabilities?.browserName ?? '?'} ${value.capabilities?.browserVersion ?? '?'}`;
     await callSession('POST', '/timeouts', DRIVER_TIMEOUTS).catch((error) => console.warn(`[safari-games] could not set the driver time limits: ${error.message}`));
     if (!isSimulator) {
       await callSession('POST', '/window/rect', MAC_WINDOW).catch((error) => console.warn(`[safari-games] could not set the window size: ${error.message}`));
+    }
+  }
+  /**
+   * Asks for a session, trying again when Safari is not ready yet. A just-booted iOS Simulator can
+   * take longer than safaridriver's own 30 s limit to bring Safari up.
+   */
+  async function openWithRetries() {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await callDriver('POST', '/session', {capabilities: {alwaysMatch: capabilities}});
+      } catch (error) {
+        if (attempt >= SESSION_START_ATTEMPTS || !/session not created/i.test(error.message)) {
+          throw error;
+        }
+        console.log(`[safari-games] ${TARGET}: Safari session attempt ${attempt} failed, trying again in 15 s: ${error.message.slice(0, 200)}`);
+        await sleep(15_000);
+      }
     }
   }
   await open();

@@ -76,6 +76,10 @@ jobs:
           # simctl boots the device with no window. Open it in the Simulator app too, so taps
           # from safaridriver have a screen to land on.
           open -a Simulator --args -CurrentDeviceUDID "$udid"
+          # A fresh simulator is still busy for a while after boot, and safaridriver gives up if
+          # Safari takes over 30 s to come up. Start Safari now so it is warm when the script connects.
+          xcrun simctl launch "$udid" com.apple.mobilesafari
+          sleep 20
           echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
 
       - name: Start safaridriver
