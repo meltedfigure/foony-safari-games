@@ -79,6 +79,26 @@ const KNOWN_SHARED_ERRORS = [
 const HOOK_SCRIPT = `
   if (!window.__safariSweepErrors) {
     window.__safariSweepErrors = [];
+    // Clues for "how did the page leave the game": in-app navigation calls, and a note that the old
+    // page closed normally. The note goes in sessionStorage so it outlives the page. A crashed page
+    // closes without one.
+    window.__safariSweepNavigations = [];
+    try {
+      sessionStorage.removeItem('__safariSweepPagehide');
+    } catch (error) {}
+    addEventListener('pagehide', () => {
+      try {
+        sessionStorage.setItem('__safariSweepPagehide', location.pathname + location.hash);
+      } catch (error) {}
+    });
+    for (const name of ['pushState', 'replaceState']) {
+      const original = history[name];
+      history[name] = function (...args) {
+        window.__safariSweepNavigations.push(name + ' ' + String(args[2]) + ' from ' + String(new Error().stack).split('\\n').slice(1, 4).join(' < '));
+        return original.apply(this, args);
+      };
+    }
+    addEventListener('popstate', () => window.__safariSweepNavigations.push('popstate (back or forward) to ' + location.pathname + location.hash));
     const push = (kind, text) => window.__safariSweepErrors.push(kind + ': ' + String(text).slice(0, 600));
     window.addEventListener('error', (event) => {
       // With capture on, this also hears files that failed to load. Those have no message, only the element.
@@ -311,7 +331,18 @@ async function tapAround() {
     }
     if (wasInRoom && !(await session.run('return location.hash')).includes('r=')) {
       // Stop here, so the report names the tap that took the player out of the game.
-      return {summary: `${count} on ${points.kind}`, leftRoomOnTap: `tap ${count} at ${point.x},${point.y} on ${target}`};
+      const how = await session.run(`
+        if (window.__safariSweepErrors) {
+          return 'same page: ' + (window.__safariSweepNavigations.slice(-3).join(' | ') || 'no history calls');
+        }
+        let note = null;
+        try {
+          note = sessionStorage.getItem('__safariSweepPagehide');
+        } catch (error) {}
+        const type = (performance.getEntriesByType('navigation')[0] || {}).type;
+        return 'a new page loaded (' + type + '), ' + (note ? 'the old page closed normally at ' + note : 'the old page closed without a pagehide event, as when its process crashes');
+      `);
+      return {summary: `${count} on ${points.kind}`, leftRoomOnTap: `tap ${count} at ${point.x},${point.y} on ${target}; ${how}`};
     }
   }
   return {summary: `${count} on ${points.kind}`};
