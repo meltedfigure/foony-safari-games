@@ -16,8 +16,8 @@ on:
   workflow_dispatch:
     inputs:
       targets:
-        description: '"mac" for Mac Safari, or iOS Simulator device names, comma separated. A name that is not exact picks the first device that starts with it.'
-        default: 'mac,iPhone SE,iPhone 16,iPhone 16 Pro Max,iPad mini'
+        description: '"mac" for Mac Safari, or iOS Simulator devices, comma separated. "iPhone 16" uses the newest iOS, "iPhone 16 @ 18" the newest iOS 18. A name that is not exact picks the first device that starts with it.'
+        default: 'mac,iPhone SE,iPhone 16,iPhone 16 @ 18,iPhone 16 Pro Max,iPad mini'
       games:
         description: '"all" for every game linked from foony.com/games, or slugs, comma separated (e.g. chess,ludo)'
         default: 'all'
@@ -62,8 +62,14 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          # The exact name on the newest iOS runtime first, else the first name that starts with it.
-          devices=$(xcrun simctl list devices available --json | jq -c '[.devices | to_entries[] | select(.key | test("iOS")) | .key as $runtime | .value[] | {name, udid, runtime: $runtime}] | sort_by(.runtime | capture("iOS-(?<version>[0-9-]+)").version | split("-") | map(tonumber)) | reverse')
+          # "iPhone 16 @ 18" limits the pick to iOS 18 runtimes. Then the exact name on the newest
+          # runtime first, else the first name that starts with it.
+          version=""
+          if [[ "$TARGET" == *@* ]]; then
+            version=$(echo "${TARGET#*@}" | tr -d ' ' | tr '.' '-')
+            TARGET=$(echo "${TARGET%%@*}" | sed 's/ *$//')
+          fi
+          devices=$(xcrun simctl list devices available --json | VERSION="$version" jq -c '[.devices | to_entries[] | select(.key | test("iOS-" + $ENV.VERSION)) | .key as $runtime | .value[] | {name, udid, runtime: $runtime}] | sort_by(.runtime | capture("iOS-(?<version>[0-9-]+)").version | split("-") | map(tonumber)) | reverse')
           udid=$(jq -r --arg name "$TARGET" '(map(select(.name == $name)) + map(select(.name | ascii_downcase | startswith($name | ascii_downcase))))[0].udid // empty' <<< "$devices")
           if [ -z "$udid" ]; then
             echo "::error::No iOS Simulator matches \"$TARGET\". Pick one of these names:"

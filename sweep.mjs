@@ -13,6 +13,12 @@
  * engine settings, not Safari, and it cannot drive the iOS Simulator. safaridriver drives the
  * real Safari that ships with macOS and with each iOS Simulator runtime.
  *
+ * iOS Simulator input: safaridriver's touch input arrives broken there. A WebDriver click delivers
+ * the finger going down but never coming up, and a touch action arrives only when the next input
+ * pushes it through (checked 2026-10-04 on iOS 18.6 and 26.2, with a test button that logged every
+ * event). Mouse input arrives whole. So in the simulator, buttons are pressed from JS and the game
+ * area is tapped with mouse input. Mac Safari uses real WebDriver clicks.
+ *
  * Ads: real Safari loads real ads, and a test tap on an ad is an invalid click on Foony's ad
  * account. Every tap first checks what is under the point and skips frames, ad slots and links
  * that leave the site. Buttons are only ever pressed by their text.
@@ -375,8 +381,8 @@ async function startSession() {
       : {browserName: 'safari', platformName: 'mac'};
   let sessionId = '';
   let browser = '';
-  // Touch for the iOS Simulator, a mouse elsewhere. Falls back to a WebDriver element click if
-  // the driver refuses pointer actions.
+  // Mouse input everywhere, also in the iOS Simulator, where touch input arrives broken (see the
+  // top of this file). Falls back to a WebDriver element click if the driver refuses pointer actions.
   let canUsePointerActions = true;
   const callSession = (method, route, body) => callDriver(method, `/session/${sessionId}${route}`, body);
   async function open() {
@@ -427,6 +433,12 @@ async function startSession() {
       writeFileSync(path.join(SHOTS_DIR, `${name}.png`), Buffer.from(base64, 'base64'));
     },
     async click(element) {
+      if (isSimulator) {
+        // A WebDriver click in the simulator delivers a press without its release (see the top of
+        // this file), so the button never fires.
+        await api.run('arguments[0].click(); return true;', element);
+        return;
+      }
       try {
         await callSession('POST', `/element/${element[ELEMENT_KEY]}/click`, {});
       } catch (error) {
@@ -443,7 +455,7 @@ async function startSession() {
           await callSession('POST', '/actions', {actions: [{
             type: 'pointer',
             id: 'finger',
-            parameters: {pointerType: isSimulator ? 'touch' : 'mouse'},
+            parameters: {pointerType: 'mouse'},
             actions: [
               {type: 'pointerMove', duration: 0, origin: 'viewport', x, y},
               {type: 'pointerDown', button: 0},

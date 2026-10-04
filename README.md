@@ -13,7 +13,8 @@ listed too.
 1. Open the **Actions** tab, pick **Safari games check**, and press **Run workflow**.
 2. Fill in the two boxes, or keep the defaults:
    - **targets**: `mac` for Mac Safari, or simulator names such as `iPhone SE`, `iPhone 16`,
-     `iPad mini`. Each one runs on its own Mac machine at the same time.
+     `iPad mini`. A name uses the newest iOS on the machine. Add a version to pick an older one, such
+     as `iPhone 16 @ 18`. Each target runs on its own Mac machine at the same time.
    - **games**: `all` for every game linked from foony.com/games, or slugs such as `chess,ludo`.
 3. All games take about 30 minutes per target.
 
@@ -27,6 +28,13 @@ This repo is public, so the Mac machines are free. If it ever goes private, ever
 Safari loads real ads on foony.com, and a test tap on an ad counts as an invalid ad click. Before each
 tap, the script checks what is under that point and skips frames, ad slots and links that leave the
 site. Buttons are only pressed by their text.
+
+## iOS Simulator input
+
+Apple's automation sends broken touch input into the simulator: a press arrives without its release.
+So in the simulator the script presses buttons with a JavaScript click and taps the game area with
+mouse input. Mac Safari gets real WebDriver clicks. Touch-only controls (like on-screen joysticks)
+are not exercised in the simulator.
 
 ## Run it on your own Mac
 
