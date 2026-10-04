@@ -16,8 +16,12 @@
  * iOS Simulator input: safaridriver's touch input arrives broken there. A WebDriver click delivers
  * the finger going down but never coming up, and a touch action arrives only when the next input
  * pushes it through (checked 2026-10-04 on iOS 18.6 and 26.2, with a test button that logged every
- * event). Mouse input arrives whole. So in the simulator, buttons are pressed from JS and the game
- * area is tapped with mouse input. Mac Safari uses real WebDriver clicks.
+ * event). Even mouse actions leave fingers down at mixed-up places, and on iOS 26.2 phones Safari
+ * read that as a gesture and loaded the page fresh in the middle of a game. So in the simulator the
+ * script uses no WebDriver input at all: buttons are pressed with element.click(), and a tap is a
+ * clean touch, pointer and mouse sequence sent from JS at that point. Those events are marked as
+ * coming from a script (isTrusted false), which Foony's handlers accept. Mac Safari uses real
+ * WebDriver input.
  *
  * Ads: real Safari loads real ads, and a test tap on an ad is an invalid click on Foony's ad
  * account. Every tap first checks what is under the point and skips frames, ad slots and links
@@ -147,6 +151,33 @@ const HOOK_SCRIPT = `
       return originalError.apply(this, args);
     };
   }
+  return true;
+`;
+
+/** One clean tap at (x, y), sent from JS: touch, pointer and mouse events, then a click, like Safari on a phone. */
+const SYNTHETIC_TAP_SCRIPT = `
+  const [x, y] = arguments;
+  const target = document.elementFromPoint(x, y);
+  if (!target) {
+    return false;
+  }
+  const options = {bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, view: window};
+  const pointer = {...options, pointerId: 1, pointerType: 'touch', isPrimary: true, width: 20, height: 20, pressure: 0.5};
+  let touch = null;
+  try {
+    touch = new Touch({identifier: 1, target, clientX: x, clientY: y, screenX: x, screenY: y, pageX: x + scrollX, pageY: y + scrollY});
+  } catch (error) {}
+  target.dispatchEvent(new PointerEvent('pointerdown', pointer));
+  if (touch) {
+    target.dispatchEvent(new TouchEvent('touchstart', {...options, touches: [touch], targetTouches: [touch], changedTouches: [touch]}));
+  }
+  target.dispatchEvent(new PointerEvent('pointerup', {...pointer, pressure: 0}));
+  if (touch) {
+    target.dispatchEvent(new TouchEvent('touchend', {...options, touches: [], targetTouches: [], changedTouches: [touch]}));
+  }
+  target.dispatchEvent(new MouseEvent('mousedown', options));
+  target.dispatchEvent(new MouseEvent('mouseup', options));
+  target.dispatchEvent(new MouseEvent('click', options));
   return true;
 `;
 
@@ -572,6 +603,10 @@ async function startSession() {
       }
     },
     async tap(x, y) {
+      if (isSimulator) {
+        await api.run(SYNTHETIC_TAP_SCRIPT, x, y);
+        return;
+      }
       if (canUsePointerActions) {
         try {
           await callSession('POST', '/actions', {actions: [{

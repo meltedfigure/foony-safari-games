@@ -31,10 +31,11 @@ site. Buttons are only pressed by their text.
 
 ## iOS Simulator input
 
-Apple's automation sends broken touch input into the simulator: a press arrives without its release.
-So in the simulator the script presses buttons with a JavaScript click and taps the game area with
-mouse input. Mac Safari gets real WebDriver clicks. Touch-only controls (like on-screen joysticks)
-are not exercised in the simulator.
+Apple's automation sends broken touch input into the simulator: a press arrives without its release,
+and leftover presses can look like a swipe to Safari. So in the simulator the script sends no
+automation input at all. It presses buttons with a JavaScript click, and a tap is a clean set of
+touch, pointer and mouse events sent from JavaScript at that point. Mac Safari gets real WebDriver
+input.
 
 ## Run it on your own Mac
 
