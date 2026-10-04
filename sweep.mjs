@@ -58,8 +58,12 @@ const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf';
 /** A room drops a player 15 s after they leave. The next game starts after that, so the old room can't clear the new room's status. */
 const ROOM_DROP_WAIT_MS = 17_000;
 const MAC_WINDOW = {width: 1440, height: 900};
-/** A WebDriver command that takes longer than this is treated as stuck. Starting Safari in the iOS Simulator can take minutes, so that gets its own limit. */
-const COMMAND_TIMEOUT_MS = 90_000;
+/**
+ * A WebDriver command that takes longer than this is treated as stuck. The simulator draws 3D games
+ * in software, and one script call during Snooker on an iPad took 86 s. Starting Safari in the iOS
+ * Simulator can take minutes, so that gets its own limit.
+ */
+const COMMAND_TIMEOUT_MS = 180_000;
 const SESSION_START_TIMEOUT_MS = 300_000;
 const SESSION_START_ATTEMPTS = 4;
 /** Commands slower than this are logged by name, so a slow or stuck step is easy to find. */

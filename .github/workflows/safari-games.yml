@@ -43,9 +43,9 @@ jobs:
     # Pinned, not macos-latest: the iOS Simulator device names and Safari versions come with the
     # image's Xcode, so a silent image change would rename the targets.
     runs-on: macos-15
-    # A full run of all games takes about 30 minutes. The limit stops a stuck Safari from holding a
-    # Mac machine for GitHub's default of 6 hours.
-    timeout-minutes: 60
+    # A full run of all games takes 20 to 40 minutes, plus up to 15 minutes to boot a simulator. The
+    # limit stops a stuck Safari from holding a Mac machine for GitHub's default of 6 hours.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
