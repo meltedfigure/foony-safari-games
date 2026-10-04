@@ -85,10 +85,11 @@ const HOOK_SCRIPT = `
     window.__safariSweepNavigations = [];
     try {
       sessionStorage.removeItem('__safariSweepPagehide');
+      sessionStorage.removeItem('__safariSweepInputs');
     } catch (error) {}
     addEventListener('pagehide', () => {
       try {
-        sessionStorage.setItem('__safariSweepPagehide', location.pathname + location.hash);
+        sessionStorage.setItem('__safariSweepPagehide', location.pathname + location.hash + '; history calls: ' + (window.__safariSweepNavigations.slice(-3).join(' | ') || 'none'));
       } catch (error) {}
     });
     for (const name of ['pushState', 'replaceState']) {
@@ -99,6 +100,27 @@ const HOOK_SCRIPT = `
       };
     }
     addEventListener('popstate', () => window.__safariSweepNavigations.push('popstate (back or forward) to ' + location.pathname + location.hash));
+    // The last inputs the page got, kept in sessionStorage so they outlive a page load: which
+    // element each landed on, where, and whether the browser made it (isTrusted) or a script did.
+    const describe = (element) => {
+      if (!element || !element.closest) {
+        return String(element);
+      }
+      const link = element.closest('a');
+      const named = element.closest('a, button, [role=button]') || element;
+      // className is an object, not a string, on SVG elements.
+      return (named.tagName.toLowerCase() + ' ' + ((link && link.getAttribute('href')) || (typeof named.className === 'string' ? named.className : ''))).slice(0, 60);
+    };
+    for (const type of ['pointerdown', 'pointerup', 'touchstart', 'touchend', 'click']) {
+      addEventListener(type, (event) => {
+        const point = event.changedTouches ? event.changedTouches[0] : event;
+        const inputs = JSON.parse(sessionStorage.getItem('__safariSweepInputs') || '[]').slice(-11);
+        inputs.push(type + '@' + Math.round(point.clientX) + ',' + Math.round(point.clientY) + ' on ' + describe(event.target) + (event.isTrusted ? '' : ' (from a script)'));
+        try {
+          sessionStorage.setItem('__safariSweepInputs', JSON.stringify(inputs));
+        } catch (error) {}
+      }, true);
+    }
     const push = (kind, text) => window.__safariSweepErrors.push(kind + ': ' + String(text).slice(0, 600));
     window.addEventListener('error', (event) => {
       // With capture on, this also hears files that failed to load. Those have no message, only the element.
@@ -340,7 +362,11 @@ async function tapAround() {
           note = sessionStorage.getItem('__safariSweepPagehide');
         } catch (error) {}
         const type = (performance.getEntriesByType('navigation')[0] || {}).type;
-        return 'a new page loaded (' + type + '), ' + (note ? 'the old page closed normally at ' + note : 'the old page closed without a pagehide event, as when its process crashes');
+        let inputs = '';
+        try {
+          inputs = JSON.parse(sessionStorage.getItem('__safariSweepInputs') || '[]').slice(-6).join(' | ');
+        } catch (error) {}
+        return 'a new page loaded (' + type + '), ' + (note ? 'the old page closed normally at ' + note : 'the old page closed without a pagehide event, as when its process crashes') + '; last inputs: ' + (inputs || 'none');
       `);
       return {summary: `${count} on ${points.kind}`, leftRoomOnTap: `tap ${count} at ${point.x},${point.y} on ${target}; ${how}`};
     }
