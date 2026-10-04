@@ -80,7 +80,14 @@ const HOOK_SCRIPT = `
   if (!window.__safariSweepErrors) {
     window.__safariSweepErrors = [];
     const push = (kind, text) => window.__safariSweepErrors.push(kind + ': ' + String(text).slice(0, 600));
-    window.addEventListener('error', (event) => push('error', [event.message, event.filename && event.filename + ':' + event.lineno + ':' + event.colno, event.error && event.error.stack].filter(Boolean).join(' | ')), true);
+    window.addEventListener('error', (event) => {
+      // With capture on, this also hears files that failed to load. Those have no message, only the element.
+      if (event.target && event.target !== window) {
+        push('failed to load', event.target.src || event.target.href || event.target.tagName);
+        return;
+      }
+      push('error', [event.message, event.filename && event.filename + ':' + event.lineno + ':' + event.colno, event.error && event.error.stack].filter(Boolean).join(' | '));
+    }, true);
     window.addEventListener('unhandledrejection', (event) => push('rejection', (event.reason && (event.reason.stack || event.reason.message)) || event.reason));
     const originalError = console.error;
     console.error = function (...args) {
@@ -147,6 +154,7 @@ async function playGame(slug) {
   try {
     await session.go(`${BASE_URL}/games/${slug}`);
     await session.run(HOOK_SCRIPT);
+    result.closedPrivacyBox = await closePrivacyBox();
     result.opened = await waitForButton(['Play Bots', 'Quick Play'], 30_000);
     if (!result.opened) {
       await session.saveShot(`${slug}-landing`);
@@ -169,8 +177,12 @@ async function playGame(slug) {
     }
     result.roomSeconds = await waitForRoom(30_000);
     await sleep(8_000);
+    // The privacy box often loads after the first try, so try again before the screenshot and taps.
+    result.closedPrivacyBox ||= await closePrivacyBox();
     await session.saveShot(`${slug}-start`);
-    result.taps = await tapAround();
+    const taps = await tapAround();
+    result.taps = taps.summary;
+    result.leftRoomOnTap = taps.leftRoomOnTap;
     await sleep(4_000);
     Object.assign(result, await session.run(SUMMARY_SCRIPT, STATE_WORDS.source));
     await session.saveShot(slug);
@@ -193,6 +205,28 @@ async function finish(result, startedAt) {
   }
   result.seconds = Math.round((performance.now() - startedAt) / 1000);
   return result;
+}
+
+/**
+ * Closes Google's "Do Not Sell or Share My Personal Information" box, as a player would. GitHub's
+ * machines are in the US, so it shows on every page and covers the bottom game controls on phones.
+ * It lives in a shadow root, which document.querySelector can't see into. Returns true when closed.
+ */
+function closePrivacyBox() {
+  return session.run(`
+    for (const host of document.querySelectorAll('*')) {
+      const root = host.shadowRoot;
+      if (!root || !(root.textContent || '').includes('Do Not Sell')) {
+        continue;
+      }
+      const close = [...root.querySelectorAll('button, [role=button]')].find((button) => /close|dismiss/i.test(button.getAttribute('aria-label') || button.textContent || ''));
+      if (close) {
+        close.click();
+        return true;
+      }
+    }
+    return false;
+  `);
 }
 
 /** Reads the game slugs linked from the live /games page, so new games are tested without a list here. */
@@ -242,7 +276,17 @@ async function tapAround() {
     return {kind: rect ? 'canvas' : 'screen', points};
   `);
   let count = 0;
+  const wasInRoom = (await session.run('return location.hash')).includes('r=');
   for (const point of points.points) {
+    const target = await session.run(`
+      const element = document.elementFromPoint(arguments[0], arguments[1]);
+      if (!element) {
+        return 'nothing';
+      }
+      const control = element.closest('a, button, [role=button]');
+      const named = control || element;
+      return (named.tagName.toLowerCase() + ' ' + ((named.innerText || '').trim().slice(0, 30) || named.getAttribute('aria-label') || named.getAttribute('href') || named.className || '')).slice(0, 80);
+    `, point.x, point.y);
     const isSafe = await session.run(`
       const element = document.elementFromPoint(arguments[0], arguments[1]);
       if (!element || element.closest('iframe, ins, [id*="google_ads"], [class*="adsbygoogle"], [data-ad-slot], [id*="Venatus"], [id*="Platform"]')) {
@@ -265,8 +309,12 @@ async function tapAround() {
     if ((await session.run('return document.body.innerText')).includes('want to forfeit')) {
       await pressButton('Cancel');
     }
+    if (wasInRoom && !(await session.run('return location.hash')).includes('r=')) {
+      // Stop here, so the report names the tap that took the player out of the game.
+      return {summary: `${count} on ${points.kind}`, leftRoomOnTap: `tap ${count} at ${point.x},${point.y} on ${target}`};
+    }
   }
-  return `${count} on ${points.kind}`;
+  return {summary: `${count} on ${points.kind}`};
 }
 
 /** Leaves through the in-app back link (as a player would) and confirms the forfeit prompt. */
@@ -348,6 +396,8 @@ function describeProblems(result) {
       problems.push('no Play Bots or Quick Play button');
     } else if (result.roomSeconds == null) {
       problems.push('never opened a room');
+    } else if (result.path && !result.path.includes('r=')) {
+      problems.push(`left the room during the test${result.leftRoomOnTap ? ` (${result.leftRoomOnTap})` : ''}`);
     }
   }
   return problems;
