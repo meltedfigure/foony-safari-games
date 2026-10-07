@@ -99,18 +99,23 @@ jobs:
               exit 1
             fi
           fi
-          devices=$(list_devices)
-          if [ -n "$version" ] && [ "$(jq 'length' <<< "$devices")" = "0" ]; then
-            # A downloaded iOS version comes with no devices. Make the one asked for.
+          pick_device() {
+            list_devices | jq -r --arg name "$TARGET" '(map(select(.name == $name)) + map(select(.name | ascii_downcase | startswith($name | ascii_downcase))))[0].udid // empty'
+          }
+          udid=$(pick_device)
+          if [ -z "$udid" ] && [ -n "$version" ]; then
+            # A downloaded iOS version comes with its newest devices only (iOS 15.5: the iPhone 13s
+            # and the iPhone SE). Make the older device asked for. It needs the exact name.
             runtime=$(find_runtime)
-            if ! xcrun simctl create "$TARGET" "$TARGET" "$runtime"; then
-              echo "::error::iOS $requested has no device named \"$TARGET\". It supports these:"
+            if xcrun simctl create "$TARGET" "$TARGET" "$runtime"; then
+              udid=$(pick_device)
+            else
+              echo "::error::iOS $requested can't make a device named \"$TARGET\". It supports these:"
               xcrun simctl list runtimes --json | RUNTIME="$runtime" jq -r '.runtimes[] | select(.identifier == $ENV.RUNTIME) | .supportedDeviceTypes[].name'
               exit 1
             fi
-            devices=$(list_devices)
           fi
-          udid=$(jq -r --arg name "$TARGET" '(map(select(.name == $name)) + map(select(.name | ascii_downcase | startswith($name | ascii_downcase))))[0].udid // empty' <<< "$devices")
+          devices=$(list_devices)
           if [ -z "$udid" ]; then
             echo "::error::No iOS Simulator matches \"$TARGET\". Pick one of these names:"
             jq -r '.[] | "\(.name) (\(.runtime | sub(".*SimRuntime."; "")))"' <<< "$devices" | sort -u
