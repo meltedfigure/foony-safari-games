@@ -6,8 +6,9 @@
  *
  * For each game: open its page on foony.com, start it against bots in a private room, tap around
  * the game area like a player, save screenshots, and record what went wrong (page errors, the
- * crash screen, sideways scroll, a game that never opened a room). Then leave through the back
- * link and confirm the forfeit prompt, as a player would.
+ * crash screen, sideways scroll, a game that never opened a room, a seat lost before the first
+ * tap). Cue games also take one real shot with the Space key. Then leave through the back link and
+ * confirm the forfeit prompt, as a player would.
  *
  * Why plain WebDriver and not Playwright: Playwright's "webkit" is its own WebKit build on its own
  * engine settings, not Safari, and it cannot drive the iOS Simulator. safaridriver drives the
@@ -40,8 +41,9 @@
  *   OUT_DIR         Where results.jsonl, summary.md and screenshots go. Default ./safari-results.
  *   TARGET          Name for this browser in the results, e.g. "iPhone 16". Default "safari".
  *
- * Exits 1 when a game crashed the page, showed the crash screen, scrolled sideways or never opened
- * a room. Page errors alone are listed in the summary but do not fail the run.
+ * Exits 1 when a game crashed the page, showed the crash screen, scrolled sideways, never opened a
+ * room, dropped the player before the first tap, or got no answer to its shot. Page errors alone
+ * are listed in the summary but do not fail the run.
  */
 import {appendFileSync, mkdirSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
@@ -70,6 +72,13 @@ const SESSION_START_ATTEMPTS = 4;
 const SLOW_COMMAND_MS = 15_000;
 /** W3C WebDriver time limits, in ms: a page load that takes longer returns early, and the page keeps loading. */
 const DRIVER_TIMEOUTS = {pageLoad: 60_000, script: 30_000, implicit: 0};
+/** Games played with a cue, where the Space key takes a shot. */
+const CUE_GAME_SLUGS = /pool|snooker/;
+/** How long the server gets to answer a shot before it counts as lost. Its answer is the shot sent to everyone in the room ("g/shot"), which takes under a second. */
+const SHOT_ANSWER_WAIT_MS = 10_000;
+const SHOT_PLAYED = 'shot played';
+const SHOT_NOT_SENT = 'no shot sent';
+const SHOT_NOT_ANSWERED = `shot sent, no answer from the server in ${SHOT_ANSWER_WAIT_MS / 1000} s`;
 /** Shown instead of Start Game when a game is in Supporter early access. A guest can't start these. */
 const SUPPORTER_ONLY_TEXT = 'Only Supporters can create a room';
 /** Words worth recording when the page shows them after the taps. */
@@ -101,6 +110,52 @@ const HOOK_SCRIPT = `
         sessionStorage.setItem('__safariSweepPagehide', location.pathname + location.hash + '; history calls: ' + (window.__safariSweepNavigations.slice(-3).join(' | ') || 'none'));
       } catch (error) {}
     });
+    // What the page and the server said to each other about the room, each line with the seconds
+    // since this hook went in. The server seats the player when the game starts and then waits for
+    // the page's first PING_ROOM. When a player loses their seat, this shows which side was late,
+    // and the server's reason ("cause") for the removal.
+    window.__safariSweepRoom = {log: [], counts: {}};
+    const hookedAt = performance.now();
+    const addRoomLine = (text) => {
+      if (window.__safariSweepRoom.log.length < 60) {
+        window.__safariSweepRoom.log.push(((performance.now() - hookedAt) / 1000).toFixed(1) + ' s ' + text);
+      }
+    };
+    const noteRoomWords = (kind, data) => {
+      if (typeof data !== 'string') {
+        return;
+      }
+      for (const word of new Set(data.match(/QUICK_PLAY|CREATE_ROOM|JOIN_ROOM|PING_ROOM|LEAVE_ROOM|CHANGE_TEAM|[A-Z]+_SHOOT|has left\\.|is spectating|is now spectating|"cause":"[a-z_]+"|"g?\\/shot"/g) || [])) {
+        const key = kind + ' ' + word.replaceAll('"', '');
+        const count = (window.__safariSweepRoom.counts[key] = (window.__safariSweepRoom.counts[key] || 0) + 1);
+        // The first few of each are enough: a ping goes out every 5 s.
+        if (count <= 3) {
+          addRoomLine(key);
+        }
+      }
+    };
+    const hookedSockets = new WeakSet();
+    const originalSocketSend = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data) {
+      // Sockets made before this hook are caught here too, on their next send.
+      if (!hookedSockets.has(this)) {
+        hookedSockets.add(this);
+        this.addEventListener('message', (event) => noteRoomWords('socket got', event.data));
+      }
+      noteRoomWords('socket sent', data);
+      return originalSocketSend.apply(this, arguments);
+    };
+    const originalFetch = window.fetch;
+    window.fetch = function (input, init) {
+      if (!/\\/call|polling/.test(String((input && input.url) || input))) {
+        return originalFetch.apply(this, arguments);
+      }
+      noteRoomWords('http sent', init && init.body);
+      return originalFetch.apply(this, arguments).then((response) => {
+        response.clone().text().then((text) => noteRoomWords('http got', text)).catch(() => {});
+        return response;
+      });
+    };
     // Safari throws once a page makes too many history calls in a short time (Chrome drops them
     // quietly), and Foony's router then loads the page fresh. So count every call and note refusals.
     window.__safariSweepHistory = {calls: 0, refused: []};
@@ -108,6 +163,9 @@ const HOOK_SCRIPT = `
       const original = history[name];
       history[name] = function (...args) {
         window.__safariSweepHistory.calls++;
+        if (String(args[2]).includes('r=')) {
+          addRoomLine('the page opened the room');
+        }
         window.__safariSweepNavigations.push(name + ' ' + String(args[2]) + ' from ' + String(new Error().stack).split('\\n').slice(1, 4).join(' < '));
         try {
           return original.apply(this, args);
@@ -203,6 +261,18 @@ const SUMMARY_SCRIPT = `
   };
 `;
 
+/** Reads the room log (see HOOK_SCRIPT), and whether the page shows the spectator bar. */
+const ROOM_SCRIPT = `
+  const room = window.__safariSweepRoom || {log: [], counts: {}};
+  const count = (pattern) => Object.keys(room.counts).filter((key) => pattern.test(key)).reduce((sum, key) => sum + room.counts[key], 0);
+  return {
+    isSpectating: /Spectating \\d+ player/.test(document.body.innerText),
+    log: room.log,
+    shotsSent: count(/ sent [A-Z]+_SHOOT$/),
+    shotAnswers: count(/ got g?\\/shot$/),
+  };
+`;
+
 mkdirSync(SHOTS_DIR, {recursive: true});
 const session = await startSession();
 console.log(`[safari-games] ${TARGET}: ${session.browser}`);
@@ -270,10 +340,19 @@ async function playGame(slug) {
     // The privacy box often loads after the first try, so try again before the screenshot and taps.
     result.closedPrivacyBox ||= await closePrivacyBox();
     await session.saveShot(`${slug}-start`);
+    // A player who is a spectator here lost their seat with no input at all: the room dropped them
+    // while their page was still opening it.
+    result.lostSeatBeforeTaps = (await session.run(ROOM_SCRIPT)).isSpectating;
     const taps = await tapAround();
     result.taps = taps.summary;
     result.leftRoomOnTap = taps.leftRoomOnTap;
+    if (CUE_GAME_SLUGS.test(slug) && !result.lostSeatBeforeTaps) {
+      result.shot = await shootWithSpace();
+    }
     await sleep(4_000);
+    const room = await session.run(ROOM_SCRIPT);
+    result.roomLog = room.log;
+    result.firstPingSeconds = readFirstPingSeconds(room.log);
     Object.assign(result, await session.run(SUMMARY_SCRIPT, STATE_WORDS.source));
     await session.saveShot(slug);
     result.left = await leaveGame(slug);
@@ -295,6 +374,46 @@ async function finish(result, startedAt) {
   }
   result.seconds = Math.round((performance.now() - startedAt) / 1000);
   return result;
+}
+
+/**
+ * Takes one real shot in a cue game with the Space key, as a keyboard player does, and waits for
+ * the server to play it. Returns what happened. No shot goes out when it is not this player's turn.
+ */
+async function shootWithSpace() {
+  const before = await session.run(ROOM_SCRIPT);
+  await session.run(`
+    for (const type of ['keydown', 'keyup']) {
+      document.body.dispatchEvent(new KeyboardEvent(type, {key: ' ', code: 'Space', bubbles: true, cancelable: true, view: window}));
+    }
+    return true;
+  `);
+  let after = before;
+  const endAt = performance.now() + SHOT_ANSWER_WAIT_MS;
+  while (performance.now() < endAt && !(after.shotsSent > before.shotsSent && after.shotAnswers > before.shotAnswers)) {
+    await sleep(500);
+    after = await session.run(ROOM_SCRIPT);
+  }
+  if (after.shotsSent === before.shotsSent) {
+    return SHOT_NOT_SENT;
+  }
+  if (after.shotAnswers === before.shotAnswers) {
+    return SHOT_NOT_ANSWERED;
+  }
+  // Let the balls roll, so the last screenshot shows the table after the shot.
+  await sleep(8_000);
+  return SHOT_PLAYED;
+}
+
+/** Returns how many seconds after the page opened the room its first PING_ROOM or JOIN_ROOM went out, or null. */
+function readFirstPingSeconds(roomLog) {
+  const secondsOf = (pattern) => {
+    const line = roomLog.find((entry) => pattern.test(entry));
+    return line ? Number(line.split(' ')[0]) : null;
+  };
+  const openedAt = secondsOf(/the page opened the room/);
+  const pingAt = secondsOf(/ sent (PING_ROOM|JOIN_ROOM)$/);
+  return openedAt == null || pingAt == null ? null : Math.round((pingAt - openedAt) * 10) / 10;
 }
 
 /**
@@ -499,6 +618,13 @@ function describeProblems(result) {
   if (result.overflowX > 0) {
     problems.push(`page scrolls sideways by ${result.overflowX}px`);
   }
+  if (result.lostSeatBeforeTaps) {
+    const cause = (result.roomLog ?? []).find((entry) => entry.includes('cause:'));
+    problems.push(`the player lost their seat before any tap (${cause ?? 'the room log has no cause'})`);
+  }
+  if (result.shot === SHOT_NOT_ANSWERED) {
+    problems.push(result.shot);
+  }
   if (!result.failed && !result.sessionLost && !result.supporterOnly) {
     if (!result.opened) {
       problems.push('no Play Bots or Quick Play button');
@@ -513,11 +639,14 @@ function describeProblems(result) {
 
 /** Builds the markdown summary: one row per game, then every page error with known ones marked. */
 function buildSummary(gameResults) {
-  const lines = [`## ${TARGET} (${session.browser})`, '', '| Game | Result | Room | Taps | History calls | Errors |', '| --- | --- | --- | --- | --- | --- |'];
+  const lines = [`## ${TARGET} (${session.browser})`, '', '| Game | Result | Room | First ping | Taps | Shot | History calls | Errors |', '| --- | --- | --- | --- | --- | --- | --- | --- |'];
   for (const result of gameResults) {
     const problems = describeProblems(result);
     const outcome = problems.length > 0 ? `❌ ${problems.join('; ')}` : result.supporterOnly ? 'Supporter only (guest can\'t start)' : '✅ ok';
-    lines.push(`| ${result.slug} | ${outcome} | ${result.roomSeconds == null ? '-' : result.roomSeconds + ' s'} | ${result.taps ?? '-'} | ${result.historyCalls ?? '-'} | ${(result.errors ?? []).length} |`);
+    lines.push(`| ${result.slug} | ${outcome} | ${result.roomSeconds == null ? '-' : result.roomSeconds + ' s'} | ${result.firstPingSeconds == null ? '-' : result.firstPingSeconds + ' s'} | ${result.taps ?? '-'} | ${result.shot ?? '-'} | ${result.historyCalls ?? '-'} | ${(result.errors ?? []).length} |`);
+  }
+  for (const result of gameResults.filter((game) => game.lostSeatBeforeTaps)) {
+    lines.push('', `### Room log of the lost seat in ${result.slug}`, ...(result.roomLog ?? []).map((entry) => `- ${entry}`));
   }
   const errorLines = gameResults.flatMap((result) => (result.errors ?? []).map((error) => {
     const known = KNOWN_SHARED_ERRORS.find(([pattern]) => pattern.test(error));
