@@ -64,11 +64,12 @@ const MAC_WINDOW = {width: 1440, height: 900};
  * A WebDriver command that takes longer than this is treated as stuck. The simulator draws 3D games
  * in software, and one script call during Snooker on an iPad took 86 s. Starting Safari in the iOS
  * Simulator can take minutes, so that gets its own limit. A downloaded iOS version is slower still
- * on its first boot: iOS 15.5 answered on the third try, and iOS 17.5 not within four.
+ * on its first boot: iOS 15.5 answered on the third try, iOS 17.5 on the sixth, and iOS 16.4 not
+ * within ten.
  */
 const COMMAND_TIMEOUT_MS = 180_000;
 const SESSION_START_TIMEOUT_MS = 300_000;
-const SESSION_START_ATTEMPTS = 10;
+const SESSION_START_ATTEMPTS = 20;
 /** Commands slower than this are logged by name, so a slow or stuck step is easy to find. */
 const SLOW_COMMAND_MS = 15_000;
 /** W3C WebDriver time limits, in ms: a page load that takes longer returns early, and the page keeps loading. */
