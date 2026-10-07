@@ -4,9 +4,14 @@ Plays every game on [foony.com](https://foony.com) in real Safari, on GitHub's M
 Mac Safari and Safari in Apple's iPhone and iPad simulators.
 
 For each game it opens the game page, starts a game against bots in a private room, taps around the
-board like a player, and saves screenshots. It reports a game as broken when Safari crashes, the page
-shows the crash screen, the page scrolls sideways, or the game never opens a room. Page errors are
-listed too.
+board like a player, and saves screenshots. In 8 Ball Pool, 9 Ball Pool and Snooker it also takes one
+real shot. It reports a game as broken when Safari crashes, the page shows the crash screen, the page
+scrolls sideways, the game never opens a room, the player loses their seat before the first tap, or
+the server does not answer the shot. Page errors are listed too.
+
+The table also shows **First ping**: how long after the room opened the page first told the server
+it is there. The server holds a new player's seat for a short time only, so a late first ping is how
+a slow phone loses its seat.
 
 ## Run it
 
@@ -15,6 +20,12 @@ listed too.
    - **targets**: `mac` for Mac Safari, or simulator names such as `iPhone SE`, `iPhone 16`,
      `iPad mini`. A name uses the newest iOS on the machine. Add a version to pick an older one, such
      as `iPhone 16 @ 18`. Each target runs on its own Mac machine at the same time.
+   - **Old iOS**: the machines have iOS 18.5 and newer. A target with an exact older version and an
+     exact device name, such as `iPhone 8 @ 15.5` or `iPhone SE (3rd generation) @ 17.5`, downloads
+     that iOS Simulator from Apple first. That adds about 10 minutes. Apple offers iOS 15.0 to 17.5.
+     Nothing older than iOS 15 runs on these machines.
+   - **Newer machine**: add ` on macos-26` to a target to use GitHub's macOS 26 image, which has
+     newer iOS versions, such as `iPhone 17 @ 26.5 on macos-26`.
    - **games**: `all` for every game linked from foony.com/games, or slugs such as `chess,ludo`.
 3. All games take about 30 minutes per target.
 
