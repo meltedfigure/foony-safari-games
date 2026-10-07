@@ -22,8 +22,8 @@ a slow phone loses its seat.
      as `iPhone 16 @ 18`. Each target runs on its own Mac machine at the same time.
    - **Old iOS**: the machines have iOS 18.5 and newer. A target with an exact older version and an
      exact device name, such as `iPhone 8 @ 15.5` or `iPhone SE (3rd generation) @ 17.5`, downloads
-     that iOS Simulator from Apple first. That adds about 10 minutes. Apple offers iOS 15.0 to 17.5.
-     Nothing older than iOS 15 runs on these machines.
+     that iOS Simulator from Apple first. That adds about 10 minutes. Apple offers iOS 15.2 to 17.5.
+     iOS 15.0 and older do not run on these machines.
    - **Newer machine**: add ` on macos-26` to a target to use GitHub's macOS 26 image, which has
      newer iOS versions, such as `iPhone 17 @ 26.5 on macos-26`.
    - **games**: `all` for every game linked from foony.com/games, or slugs such as `chess,ludo`.
