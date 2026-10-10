@@ -7,7 +7,8 @@
  * For each game: open its page on foony.com, start it against bots in a private room, tap around
  * the game area like a player, save screenshots, and record what went wrong (page errors, the
  * crash screen, sideways scroll, a game that never opened a room, a seat lost before the first
- * tap). Cue games also take one real shot with the Space key. Then leave through the back link and
+ * tap). Cue games also take one real shot with the Space key. Foon-o plays five real turns instead
+ * of the taps: a card from the hand, or a draw from the deck. Then leave through the back link and
  * confirm the forfeit prompt, as a player would.
  *
  * Why plain WebDriver and not Playwright: Playwright's "webkit" is its own WebKit build on its own
@@ -42,7 +43,8 @@
  *   TARGET          Name for this browser in the results, e.g. "iPhone 16". Default "safari".
  *
  * Exits 1 when a game crashed the page, showed the crash screen, scrolled sideways, never opened a
- * room, dropped the player before the first tap, or got no answer to its shot. Page errors alone
+ * room, dropped the player before the first tap, got no answer to its shot, or had a Foon-o tap
+ * that did not play or draw a card. Page errors alone
  * are listed in the summary but do not fail the run.
  */
 import {appendFileSync, mkdirSync, writeFileSync} from 'node:fs';
@@ -81,6 +83,12 @@ const SHOT_ANSWER_WAIT_MS = 10_000;
 const SHOT_PLAYED = 'shot played';
 const SHOT_NOT_SENT = 'no shot sent';
 const SHOT_NOT_ANSWERED = `shot sent, no answer from the server in ${SHOT_ANSWER_WAIT_MS / 1000} s`;
+/** Foon-o, where the script plays real turns instead of tapping a grid: a card from the hand, or a draw. */
+const FOONO_SLUG = 'foono-online-card-game';
+/** How many of the player's turns to play in Foon-o. */
+const FOONO_TURNS = 5;
+/** How long to wait for the player's turn while the bots play theirs. Bots take a few seconds each. */
+const FOONO_TURN_WAIT_MS = 60_000;
 /** Shown instead of Start Game when a game is in Supporter early access. A guest can't start these. */
 const SUPPORTER_ONLY_TEXT = 'Only Supporters can create a room';
 /** Words worth recording when the page shows them after the taps. */
@@ -275,6 +283,56 @@ const ROOM_SCRIPT = `
   };
 `;
 
+/**
+ * What the Foon-o player can do now: the cards they can play, each with a point where a tap lands
+ * on that card and not on the card over it, and a point on the draw deck when it can be drawn. A
+ * card that can't be played has its pictures dimmed to half brightness. The deck is in the bottom
+ * right corner of a square table, and in the middle above the hand on a tall (phone) table.
+ */
+const FOONO_TURN_SCRIPT = `
+  const isBright = (element) => !/brightness\\(0\\.5\\)/.test((element.querySelector('img') || {style: {}}).style.filter || '');
+  const isHit = (element, x, y) => element.contains(document.elementFromPoint(x, y));
+  const cards = [...document.querySelectorAll('div[class*="brightness-[1.001]"]')];
+  const lefts = cards.map((card) => card.getBoundingClientRect().x).sort((left, right) => left - right);
+  const playable = [];
+  for (const card of cards.filter(isBright)) {
+    const rect = card.getBoundingClientRect();
+    // The next card covers this one's right side, so aim at the strip it leaves open.
+    const next = lefts.find((left) => left > rect.x + 1);
+    const openWidth = Math.min(rect.width, next === undefined ? rect.width : next - rect.x);
+    const x = Math.round(rect.x + openWidth / 2);
+    const y = Math.round(rect.y + rect.height * 0.3);
+    if (isHit(card, x, y)) {
+      playable.push({x, y, isWild: /gray_card/.test((card.querySelector('img') || {}).src || '')});
+    }
+  }
+  const deck = [...document.querySelectorAll('div[class*="left-[calc(85%-8px)]"], div[class*="left-[42.5%]"]')]
+    .find((element) => String(element.className).includes('z-10') && element.querySelector('img'));
+  let deckPoint = null;
+  if (deck && isBright(deck)) {
+    const rect = deck.getBoundingClientRect();
+    const x = Math.round(rect.x + Math.min(rect.width, innerWidth - rect.x) / 2);
+    // Only the part on the screen can be tapped, and the hand can cover the deck's top.
+    for (const share of [0.5, 0.75, 0.25]) {
+      const y = Math.round(rect.y + (Math.min(rect.bottom, innerHeight) - rect.y) * share);
+      if (isHit(deck, x, y)) {
+        deckPoint = {x, y};
+        break;
+      }
+    }
+  }
+  const red = document.querySelector('[role="dialog"] button[aria-label="red"]');
+  const redRect = red && red.getBoundingClientRect();
+  return {
+    handCount: cards.length,
+    playable,
+    deck: deckPoint,
+    // The red wedge is the top quarter of the colour picker's diamond.
+    red: redRect ? {x: Math.round(redRect.x + redRect.width / 2), y: Math.round(redRect.y + redRect.height / 4)} : null,
+    hasEnded: /You won|You lost|Play Again|Rematch/.test(document.body.innerText),
+  };
+`;
+
 mkdirSync(SHOTS_DIR, {recursive: true});
 const session = await startSession();
 console.log(`[safari-games] ${TARGET}: ${session.browser}`);
@@ -345,9 +403,14 @@ async function playGame(slug) {
     // A player who is a spectator here lost their seat with no input at all: the room dropped them
     // while their page was still opening it.
     result.lostSeatBeforeTaps = (await session.run(ROOM_SCRIPT)).isSpectating;
-    const taps = await tapAround();
-    result.taps = taps.summary;
-    result.leftRoomOnTap = taps.leftRoomOnTap;
+    if (slug === FOONO_SLUG && !result.lostSeatBeforeTaps) {
+      result.foonoTurns = await playFoonoTurns();
+      result.taps = `${result.foonoTurns.length} turns`;
+    } else {
+      const taps = await tapAround();
+      result.taps = taps.summary;
+      result.leftRoomOnTap = taps.leftRoomOnTap;
+    }
     if (CUE_GAME_SLUGS.test(slug) && !result.lostSeatBeforeTaps) {
       result.shot = await shootWithSpace();
     }
@@ -405,6 +468,54 @@ async function shootWithSpace() {
   // Let the balls roll, so the last screenshot shows the table after the shot.
   await sleep(8_000);
   return SHOT_PLAYED;
+}
+
+/**
+ * Plays the player's next Foon-o turns like a player: taps a card that can be played (a wild first,
+ * then red in the colour picker), or taps the deck when nothing can be played. Returns one line per
+ * turn. A line with "did nothing" means the tap did not change the hand, which is a bug.
+ */
+async function playFoonoTurns() {
+  const turns = [];
+  for (let turnIndex = 0; turnIndex < FOONO_TURNS; turnIndex++) {
+    let turn = await session.run(FOONO_TURN_SCRIPT);
+    const endAt = performance.now() + FOONO_TURN_WAIT_MS;
+    while (!turn.playable.length && !turn.deck && !turn.hasEnded && performance.now() < endAt) {
+      await sleep(500);
+      turn = await session.run(FOONO_TURN_SCRIPT);
+    }
+    if (turn.hasEnded) {
+      turns.push('the game ended');
+      break;
+    }
+    if (!turn.playable.length && !turn.deck) {
+      turns.push(`never my turn in ${FOONO_TURN_WAIT_MS / 1000} s`);
+      break;
+    }
+    const card = turn.playable.find((each) => each.isWild) ?? turn.playable[0];
+    if (card) {
+      await session.tap(card.x, card.y);
+      await sleep(800);
+      let after = await session.run(FOONO_TURN_SCRIPT);
+      if (after.red) {
+        await session.tap(after.red.x, after.red.y);
+        await sleep(800);
+        after = await session.run(FOONO_TURN_SCRIPT);
+      }
+      turns.push(after.handCount === turn.handCount - 1 ? (card.isWild ? 'played a wild' : 'played a card') : `a tap on a card did nothing (hand ${turn.handCount} -> ${after.handCount})`);
+    } else {
+      await session.tap(turn.deck.x, turn.deck.y);
+      await sleep(1_500);
+      const after = await session.run(FOONO_TURN_SCRIPT);
+      turns.push(after.handCount > turn.handCount ? 'drew a card' : `a tap on the deck did nothing (hand ${turn.handCount} -> ${after.handCount})`);
+    }
+    if (turnIndex < 2) {
+      await session.saveShot(`${FOONO_SLUG}-turn${turnIndex + 1}`);
+    }
+    // The bots play next. Without the wait, the next read can still be this turn.
+    await sleep(1_500);
+  }
+  return turns;
 }
 
 /** Returns how many seconds after the page opened the room its first PING_ROOM or JOIN_ROOM went out, or null. */
@@ -627,6 +738,10 @@ function describeProblems(result) {
   if (result.shot === SHOT_NOT_ANSWERED) {
     problems.push(result.shot);
   }
+  const failedTurn = (result.foonoTurns ?? []).find((turn) => /did nothing|never my turn/.test(turn));
+  if (failedTurn) {
+    problems.push(`Foon-o: ${failedTurn}`);
+  }
   if (!result.failed && !result.sessionLost && !result.supporterOnly) {
     if (!result.opened) {
       problems.push('no Play Bots or Quick Play button');
@@ -646,6 +761,9 @@ function buildSummary(gameResults) {
     const problems = describeProblems(result);
     const outcome = problems.length > 0 ? `❌ ${problems.join('; ')}` : result.supporterOnly ? 'Supporter only (guest can\'t start)' : '✅ ok';
     lines.push(`| ${result.slug} | ${outcome} | ${result.roomSeconds == null ? '-' : result.roomSeconds + ' s'} | ${result.firstPingSeconds == null ? '-' : result.firstPingSeconds + ' s'} | ${result.taps ?? '-'} | ${result.shot ?? '-'} | ${result.historyCalls ?? '-'} | ${(result.errors ?? []).length} |`);
+  }
+  for (const result of gameResults.filter((game) => game.foonoTurns)) {
+    lines.push('', `### Foon-o turns`, ...result.foonoTurns.map((turn, index) => `${index + 1}. ${turn}`));
   }
   for (const result of gameResults.filter((game) => game.lostSeatBeforeTaps)) {
     lines.push('', `### Room log of the lost seat in ${result.slug}`, ...(result.roomLog ?? []).map((entry) => `- ${entry}`));

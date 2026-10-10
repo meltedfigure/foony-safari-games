@@ -5,9 +5,11 @@ Mac Safari and Safari in Apple's iPhone and iPad simulators.
 
 For each game it opens the game page, starts a game against bots in a private room, taps around the
 board like a player, and saves screenshots. In 8 Ball Pool, 9 Ball Pool and Snooker it also takes one
-real shot. It reports a game as broken when Safari crashes, the page shows the crash screen, the page
-scrolls sideways, the game never opens a room, the player loses their seat before the first tap, or
-the server does not answer the shot. Page errors are listed too.
+real shot. In Foon-o it plays five real turns instead: it taps a card that can be played (a wild card
+first, then red in the colour picker), or the deck when no card can be played. It reports a game as
+broken when Safari crashes, the page shows the crash screen, the page scrolls sideways, the game never
+opens a room, the player loses their seat before the first tap, the server does not answer the shot,
+or a Foon-o tap does not play or draw a card. Page errors are listed too.
 
 The table also shows **First ping**: how long after the room opened the page first told the server
 it is there. The server holds a new player's seat for a short time only, so a late first ping is how
