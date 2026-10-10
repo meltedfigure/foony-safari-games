@@ -303,7 +303,7 @@ const FOONO_TURN_SCRIPT = `
     const x = Math.round(rect.x + openWidth / 2);
     const y = Math.round(rect.y + rect.height * 0.3);
     if (isHit(card, x, y)) {
-      playable.push({x, y, isWild: /gray_card/.test((card.querySelector('img') || {}).src || '')});
+      playable.push({x, y, id: card.getAttribute('data-hand-card-id'), isWild: /gray_card/.test((card.querySelector('img') || {}).src || '')});
     }
   }
   const deck = [...document.querySelectorAll('div[class*="left-[calc(85%-8px)]"], div[class*="left-[42.5%]"]')]
@@ -325,6 +325,9 @@ const FOONO_TURN_SCRIPT = `
   const redRect = red && red.getBoundingClientRect();
   return {
     handCount: cards.length,
+    // Each hand card keeps its own id while it is in the hand, so a play or a draw shows up even when
+    // the bots' moves change the number of cards before the next read.
+    handIds: cards.map((card) => card.getAttribute('data-hand-card-id')),
     playable,
     deck: deckPoint,
     // The red wedge is the top quarter of the colour picker's diamond.
@@ -502,12 +505,17 @@ async function playFoonoTurns() {
         await sleep(800);
         after = await session.run(FOONO_TURN_SCRIPT);
       }
-      turns.push(after.handCount === turn.handCount - 1 ? (card.isWild ? 'played a wild' : 'played a card') : `a tap on a card did nothing (hand ${turn.handCount} -> ${after.handCount})`);
+      // The simulator's big screens are slow to drive, and a bot's draw card can change the hand
+      // between the tap and this read. So the tapped card leaving the hand is what counts.
+      const didPlay = card.id ? !after.handIds.includes(card.id) : after.handCount === turn.handCount - 1;
+      turns.push(didPlay ? (card.isWild ? 'played a wild' : 'played a card') : `a tap on a card did nothing (hand ${turn.handCount} -> ${after.handCount})`);
     } else {
       await session.tap(turn.deck.x, turn.deck.y);
       await sleep(1_500);
       const after = await session.run(FOONO_TURN_SCRIPT);
-      turns.push(after.handCount > turn.handCount ? 'drew a card' : `a tap on the deck did nothing (hand ${turn.handCount} -> ${after.handCount})`);
+      // Any change counts: picking up a draw stack can also take cards away (a draw card can be -1).
+      const didDraw = after.handIds.join() !== turn.handIds.join();
+      turns.push(didDraw ? 'drew a card' : `a tap on the deck did nothing (hand ${turn.handCount} -> ${after.handCount})`);
     }
     if (turnIndex < 2) {
       await session.saveShot(`${FOONO_SLUG}-turn${turnIndex + 1}`);
