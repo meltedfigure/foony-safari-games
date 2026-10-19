@@ -26,6 +26,9 @@ on:
       games:
         description: '"all" for every game linked from foony.com/games, or slugs, comma separated (e.g. chess,ludo)'
         default: 'all'
+      probe:
+        description: '"games" plays the games (sweep.mjs). "images" only checks which pictures in probe-images/ Safari can load (image-probe.mjs).'
+        default: 'games'
 
 permissions:
   contents: read
@@ -157,7 +160,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           GAMES: ${{ inputs.games }}
           OUT_DIR: ${{ runner.temp }}/safari-results
-        run: node sweep.mjs
+        run: node ${{ inputs.probe == 'images' && 'image-probe.mjs' || 'sweep.mjs' }}
 
       - name: Save what the iOS Simulator shows
         if: failure() && env.SIMULATOR_UDID != ''

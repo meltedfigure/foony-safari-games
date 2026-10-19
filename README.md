@@ -30,6 +30,9 @@ a slow phone loses its seat.
    - **Newer machine**: add ` on macos-26` to a target to use GitHub's macOS 26 image, which has
      newer iOS versions, such as `iPhone 17 @ 26.5 on macos-26`.
    - **games**: `all` for every game linked from foony.com/games, or slugs such as `chess,ludo`.
+   - **probe**: `games` plays the games. `images` only checks which pictures Safari can load: every
+     picture in `probe-images/urls.txt` from foony.com, and the made-up pictures in
+     `probe-images/palette/` (1 to 200 colours, lossless and lossy WebP).
 3. All games take 30 to 60 minutes per target.
 
 When it ends, the run page shows a table for each target. The screenshots and `results.jsonl` are
