@@ -3,8 +3,9 @@
 Plays every game on [foony.com](https://foony.com) in real Safari, on GitHub's Mac machines. It checks
 Mac Safari and Safari in Apple's iPhone and iPad simulators.
 
-For each game it opens the game page, starts a game against bots in a private room, taps around the
-board like a player, and saves screenshots. In 8 Ball Pool, 9 Ball Pool and Snooker it also takes one
+For each game it opens the game page with `?instantJoin=true`, which makes the page create a private
+room and enter it. It starts a game against bots from that room's lobby, taps around the board like a
+player, and saves screenshots. In 8 Ball Pool, 9 Ball Pool and Snooker it also takes one
 real shot. In Foon-o it plays five real turns instead: it taps a card that can be played (a wild card
 first, then red in the colour picker), or the deck when no card can be played. It reports a game as
 broken when Safari crashes, the page shows the crash screen, the page scrolls sideways, the game never
@@ -29,7 +30,7 @@ a slow phone loses its seat.
    - **Newer machine**: add ` on macos-26` to a target to use GitHub's macOS 26 image, which has
      newer iOS versions, such as `iPhone 17 @ 26.5 on macos-26`.
    - **games**: `all` for every game linked from foony.com/games, or slugs such as `chess,ludo`.
-3. All games take about 30 minutes per target.
+3. All games take 30 to 60 minutes per target.
 
 When it ends, the run page shows a table for each target. The screenshots and `results.jsonl` are
 under **Artifacts** at the bottom of the run page.
@@ -40,7 +41,11 @@ This repo is public, so the Mac machines are free. If it ever goes private, ever
 
 Safari loads real ads on foony.com, and a test tap on an ad counts as an invalid ad click. Before each
 tap, the script checks what is under that point and skips frames, ad slots and links that leave the
-site. Buttons are only pressed by their text.
+site. Buttons are only pressed by their exact text.
+
+The script never presses the game menu's Play Bots, Quick Play or Play Online. For some players Play
+Bots makes a public room in one press, and Quick Play matches real players. It presses the lobby's
+Play Bots or Start Game only while the page is still in its own private room.
 
 ## iOS Simulator input
 

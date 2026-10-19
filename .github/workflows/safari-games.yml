@@ -1,13 +1,13 @@
 name: Safari games check
 
 # Plays every live game on foony.com in real Safari, on GitHub's Mac machines: Mac Safari and
-# iOS Simulator Safari (iPhone and iPad). Each game is started against bots in a private room,
-# tapped around, screenshotted and checked for crashes, the crash screen, sideways scroll and
-# page errors. The script is sweep.mjs.
+# iOS Simulator Safari (iPhone and iPad). Each game is started against bots in a private room
+# (?instantJoin=true), tapped around, screenshotted and checked for crashes, the crash screen,
+# sideways scroll and page errors. The script is sweep.mjs.
 #
 # Manual start only: Actions > Safari games check > Run workflow. This repo is public, so GitHub's
 # Mac machines cost nothing here. Keep it public, or every Mac minute bills the owner's account.
-# One target takes about 30 minutes for all games.
+# One target takes 30 to 60 minutes for all games.
 #
 # Old iOS: GitHub's machines only have the newest iOS versions. A target with an exact older
 # version, e.g. "iPhone 8 @ 15.5", downloads that iOS Simulator from Apple first (5 to 8 GB, about
@@ -50,9 +50,9 @@ jobs:
     needs: plan
     name: Safari on ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    # A full run of all games takes 20 to 40 minutes, plus up to 15 minutes to boot a simulator. The
+    # A full run of all games takes 30 to 60 minutes, plus up to 15 minutes to boot a simulator. The
     # limit stops a stuck Safari from holding a Mac machine for GitHub's default of 6 hours.
-    timeout-minutes: 90
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:

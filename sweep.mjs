@@ -4,7 +4,8 @@
  * safaridriver. Run by .github/workflows/safari-games.yml on GitHub's Mac runners. Any W3C
  * WebDriver server works, so it can be tried locally with chromedriver (see CAPABILITIES).
  *
- * For each game: open its page on foony.com, start it against bots in a private room, tap around
+ * For each game: open its page on foony.com with ?instantJoin=true, which makes the page create a
+ * private room and enter it, start it against bots from that room's lobby, tap around
  * the game area like a player, save screenshots, and record what went wrong (page errors, the
  * crash screen, sideways scroll, a game that never opened a room, a seat lost before the first
  * tap). Cue games also take one real shot with the Space key. Foon-o plays five real turns instead
@@ -27,7 +28,12 @@
  *
  * Ads: real Safari loads real ads, and a test tap on an ad is an invalid click on Foony's ad
  * account. Every tap first checks what is under the point and skips frames, ad slots and links
- * that leave the site. Buttons are only ever pressed by their text.
+ * that leave the site. Buttons are only ever pressed by their exact text.
+ *
+ * Real players: the script never presses the game menu's Play Bots, Quick Play or Play Online.
+ * For some players Play Bots makes a PUBLIC room in one press, and Quick Play matches real people.
+ * The lobby's Play Bots and Start Game start the script's own private room, and they are pressed
+ * only while the page is still in that room, so a lost room never leads to the game menu.
  *
  * Limit: WebDriver cannot run a script before the page's own scripts, so errors thrown while a page
  * loads (before the error hook goes in) are not seen.
@@ -375,30 +381,26 @@ async function playGame(slug) {
   const result = {slug};
   const startedAt = performance.now();
   try {
-    await session.go(`${BASE_URL}/games/${slug}`);
+    // The page waits for the guest login, then creates a private room and enters it.
+    await session.go(`${BASE_URL}/games/${slug}?instantJoin=true`);
     await session.run(HOOK_SCRIPT);
     result.closedPrivacyBox = await closePrivacyBox();
-    result.opened = await waitForButton(['Play Bots', 'Quick Play'], 30_000);
-    if (!result.opened) {
+    result.roomSeconds = await waitForRoom(45_000);
+    if (result.roomSeconds == null) {
+      result.supporterOnly = (await session.run('return document.body.innerText')).includes(SUPPORTER_ONLY_TEXT);
       await session.saveShot(`${slug}-landing`);
       return finish(result, startedAt);
     }
-    await pressButton(result.opened);
-    await sleep(3_000);
-    if ((await session.run('return document.body.innerText')).includes(SUPPORTER_ONLY_TEXT)) {
-      result.supporterOnly = true;
-      await session.saveShot(slug);
-      return finish(result, startedAt);
+    const roomHash = await session.run('return location.hash');
+    await sleep(4_000);
+    await session.saveShot(`${slug}-lobby`);
+    // The lobby's Play Bots opens the bot settings, whose Start Game starts this room. Solo games
+    // show Start Game in the lobby itself, so the dialog is optional.
+    result.opened = await pressInOwnRoom(roomHash, /^(Play Bots|Start Game)$/i);
+    await sleep(1_500);
+    if (result.opened && (await findButton(/^Start Game$/i, '[role="dialog"]'))) {
+      await pressInOwnRoom(roomHash, /^Start Game$/i, '[role="dialog"]');
     }
-    if (await findButton('Private')) {
-      await pressButton('Private');
-      await sleep(500);
-    }
-    // Some games start from Play Bots alone (no settings dialog), so Start Game is optional.
-    if (await findButton('Start Game')) {
-      await pressButton('Start Game');
-    }
-    result.roomSeconds = await waitForRoom(30_000);
     await sleep(8_000);
     // The privacy box often loads after the first try, so try again before the screenshot and taps.
     result.closedPrivacyBox ||= await closePrivacyBox();
@@ -637,7 +639,7 @@ async function tapAround() {
     count++;
     await sleep(700);
     if ((await session.run('return document.body.innerText')).includes('want to forfeit')) {
-      await pressButton('Cancel');
+      await pressButton(/^Cancel$/i);
     }
     if (wasInRoom && !(await session.run('return location.hash')).includes('r=')) {
       // Stop here, so the report names the tap that took the player out of the game.
@@ -672,53 +674,52 @@ async function leaveGame(slug) {
     return Boolean(link);
   `, `/games/${slug}`);
   await sleep(1_500);
-  const didConfirm = (await findButton('Yes, Please')) ? await pressButton('Yes, Please') : false;
+  const didConfirm = await pressButton(/^Yes, Please$/i);
   await sleep(1_500);
   return {backLink: didClick, confirmed: didConfirm};
 }
 
 /**
- * Waits up to `timeoutMs` for one of the button texts to show with React attached, and returns the
- * first that does, or null. A tap on the server-sent button before React attaches does nothing.
+ * The first visible button or link inside `scope` whose whole text (or aria-label) matches
+ * `pattern`, scrolled into view, or null. Never one inside a link to a room: the home page's room
+ * cards open real players' rooms.
  */
-async function waitForButton(texts, timeoutMs) {
-  const endAt = performance.now() + timeoutMs;
-  while (performance.now() < endAt) {
-    for (const text of texts) {
-      if (await findButton(text)) {
-        return text;
-      }
-    }
-    await sleep(500);
-  }
-  return null;
-}
-
-/** The smallest visible button or link whose text has `text` and that React drives, scrolled into view, or null. */
-function findButton(text) {
+function findButton(pattern, scope = 'body') {
   return session.run(`
-    const wanted = arguments[0].toLowerCase();
-    const matches = [...document.querySelectorAll('button, a, [role=button]')].filter((candidate) => {
+    const wanted = new RegExp(arguments[0], arguments[1]);
+    const match = [...document.querySelectorAll(arguments[2] + ' button, ' + arguments[2] + ' a, ' + arguments[2] + ' [role=button]')].find((candidate) => {
       const rect = candidate.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && (candidate.innerText || candidate.getAttribute('aria-label') || '').toLowerCase().includes(wanted);
+      return rect.width > 0 && rect.height > 0 && wanted.test((candidate.innerText || candidate.getAttribute('aria-label') || '').trim())
+        && !candidate.closest('a[href*="#r="], a[href^="/r/"], a[href*="roomId="]');
     });
-    matches.sort((left, right) => left.innerText.length - right.innerText.length);
-    if (!matches[0] || !Object.keys(matches[0]).some((key) => key.startsWith('__reactProps'))) {
+    if (!match) {
       return null;
     }
-    matches[0].scrollIntoView({block: 'center'});
-    return matches[0];
-  `, text);
+    match.scrollIntoView({block: 'center'});
+    return match;
+  `, pattern.source, pattern.flags, scope);
 }
 
-/** Presses the button with `text` through WebDriver, like a finger or mouse. Returns false when there is none. */
-async function pressButton(text) {
-  const element = await findButton(text);
+/** Presses the button matching `pattern` through WebDriver, like a finger or mouse. Returns false when there is none. */
+async function pressButton(pattern, scope) {
+  const element = await findButton(pattern, scope);
   if (!element) {
     return false;
   }
   await session.click(element);
   return true;
+}
+
+/**
+ * Presses the button matching `pattern` only while the page is still in the room `roomHash`
+ * (e.g. "#r=ab12cd34"). Outside it, the same words are the game menu's buttons, and its Play Bots
+ * can make a public room. Returns false when the page left the room or has no such button.
+ */
+async function pressInOwnRoom(roomHash, pattern, scope) {
+  if ((await session.run('return location.hash')) !== roomHash) {
+    return false;
+  }
+  return pressButton(pattern, scope);
 }
 
 /** Lists what looks broken in one game's result. Empty means the game worked. */
@@ -751,10 +752,10 @@ function describeProblems(result) {
     problems.push(`Foon-o: ${failedTurn}`);
   }
   if (!result.failed && !result.sessionLost && !result.supporterOnly) {
-    if (!result.opened) {
-      problems.push('no Play Bots or Quick Play button');
-    } else if (result.roomSeconds == null) {
+    if (result.roomSeconds == null) {
       problems.push('never opened a room');
+    } else if (!result.opened) {
+      problems.push('no Play Bots or Start Game button in the lobby');
     } else if (result.path && !result.path.includes('r=')) {
       problems.push(`left the room during the test${result.leftRoomOnTap ? ` (${result.leftRoomOnTap})` : ''}`);
     }
