@@ -97,6 +97,13 @@ const FOONO_TURNS = 5;
 const FOONO_TURN_WAIT_MS = 60_000;
 /** Shown instead of Start Game when a game is in Supporter early access. A guest can't start these. */
 const SUPPORTER_ONLY_TEXT = 'Only Supporters can create a room';
+/**
+ * The hash Google's full-screen ads set while they show, so that Back closes the ad. Foony's router
+ * treats it as the same page, so the player stays in their room (client/src/router/History.ts).
+ */
+const FULLSCREEN_AD_HASH = '#goog_fullscreen_ad';
+/** Stops pressing Back after this many ads in one wait, in case Back does not close one. */
+const MAX_ADS_PER_WAIT = 3;
 /** Words worth recording when the page shows them after the taps. */
 const STATE_WORDS = /no longer in this room|has left\.|won in [^\n]{0,30}|Your turn|Get ready|Click the error to copy it|isn't supported|not supported|Something went wrong|Server is restarting|Reconnecting|Disconnected|Couldn't start a guest session/g;
 /**
@@ -401,7 +408,7 @@ async function playGame(slug) {
     if (result.opened && (await findButton(/^Start Game$/i, '[role="dialog"]'))) {
       await pressInOwnRoom(roomHash, /^Start Game$/i, '[role="dialog"]');
     }
-    await sleep(8_000);
+    result.closedAds = await waitClosingAds(slug, 8_000);
     // The privacy box often loads after the first try, so try again before the screenshot and taps.
     result.closedPrivacyBox ||= await closePrivacyBox();
     await session.saveShot(`${slug}-start`);
@@ -419,7 +426,7 @@ async function playGame(slug) {
     if (CUE_GAME_SLUGS.test(slug) && !result.lostSeatBeforeTaps) {
       result.shot = await shootWithSpace();
     }
-    await sleep(4_000);
+    result.closedAds += await waitClosingAds(slug, 4_000);
     const room = await session.run(ROOM_SCRIPT);
     result.roomLog = room.log;
     result.firstPingSeconds = readFirstPingSeconds(room.log);
@@ -436,6 +443,32 @@ async function playGame(slug) {
     throw error;
   }
   return finish(result, startedAt);
+}
+
+/**
+ * Waits `ms`, and closes Google's full-screen ad with Back whenever it shows, as a player can.
+ * Foony asks for one when a game starts (not in a new player's first games), and the game starts
+ * only once it ends. It covers the whole page, so every tap would land on the ad, and the taps skip
+ * ads. The first time, it saves a screenshot of the ad. After an ad the wait starts again, so the
+ * game gets the full `ms` to start. Returns how many ads it closed.
+ */
+async function waitClosingAds(slug, ms) {
+  let closed = 0;
+  let endAt = performance.now() + ms;
+  while (performance.now() < endAt) {
+    // Back closes the ad only while its entry is the current one. On any other entry Back would
+    // leave the room, so the hash is checked right before.
+    if (closed < MAX_ADS_PER_WAIT && (await session.run('return location.hash')) === FULLSCREEN_AD_HASH) {
+      if (closed === 0) {
+        await session.saveShot(`${slug}-ad`);
+      }
+      await session.run(`if (location.hash === arguments[0]) { history.back(); } return true;`, FULLSCREEN_AD_HASH);
+      closed++;
+      endAt = performance.now() + ms;
+    }
+    await sleep(500);
+  }
+  return closed;
 }
 
 async function finish(result, startedAt) {
@@ -756,6 +789,8 @@ function describeProblems(result) {
       problems.push('never opened a room');
     } else if (!result.opened) {
       problems.push('no Play Bots or Start Game button in the lobby');
+    } else if (result.path === FULLSCREEN_AD_HASH || (result.path ?? '').endsWith(FULLSCREEN_AD_HASH)) {
+      problems.push(`a full-screen ad still covered the game after ${result.closedAds} presses of Back`);
     } else if (result.path && !result.path.includes('r=')) {
       problems.push(`left the room during the test${result.leftRoomOnTap ? ` (${result.leftRoomOnTap})` : ''}`);
     }
@@ -769,7 +804,7 @@ function buildSummary(gameResults) {
   for (const result of gameResults) {
     const problems = describeProblems(result);
     const outcome = problems.length > 0 ? `❌ ${problems.join('; ')}` : result.supporterOnly ? 'Supporter only (guest can\'t start)' : '✅ ok';
-    lines.push(`| ${result.slug} | ${outcome} | ${result.roomSeconds == null ? '-' : result.roomSeconds + ' s'} | ${result.firstPingSeconds == null ? '-' : result.firstPingSeconds + ' s'} | ${result.taps ?? '-'} | ${result.shot ?? '-'} | ${result.historyCalls ?? '-'} | ${(result.errors ?? []).length} |`);
+    lines.push(`| ${result.slug} | ${outcome} | ${result.roomSeconds == null ? '-' : result.roomSeconds + ' s'} | ${result.firstPingSeconds == null ? '-' : result.firstPingSeconds + ' s'} | ${result.taps ?? '-'}${result.closedAds ? ` (after ${result.closedAds} full-screen ad${result.closedAds > 1 ? 's' : ''})` : ''} | ${result.shot ?? '-'} | ${result.historyCalls ?? '-'} | ${(result.errors ?? []).length} |`);
   }
   for (const result of gameResults.filter((game) => game.foonoTurns)) {
     lines.push('', `### Foon-o turns`, ...result.foonoTurns.map((turn, index) => `${index + 1}. ${turn}`));
