@@ -433,7 +433,9 @@ async function playGame(slug) {
     Object.assign(result, await session.run(SUMMARY_SCRIPT, STATE_WORDS.source));
     await session.saveShot(slug);
     result.left = await leaveGame(slug);
-    await sleep(ROOM_DROP_WAIT_MS);
+    // Leaving can show an ad too. Loading the next game under it let the ad's own Back, when the
+    // load closed it, send Safari back to this game's page (iPhone 17e, iOS 26.5).
+    result.closedAds += await waitClosingAds(`${slug}-leave`, ROOM_DROP_WAIT_MS);
   } catch (error) {
     // Safari's page or the whole session died: record it, and the caller starts a new session.
     if (/invalid session id|no such window|session.*(deleted|terminated|not created)|ECONNREFUSED|fetch failed|stuck/i.test(String(error.message))) {
@@ -448,7 +450,7 @@ async function playGame(slug) {
 /**
  * Waits `ms`, and closes Google's full-screen ad with Back whenever it shows, as a player can.
  * Foony asks for one when a game starts (not in a new player's first games), and the game starts
- * only once it ends. It covers the whole page, so every tap would land on the ad, and the taps skip
+ * only once it ends. It can ask for one when a player leaves a game too. It covers the whole page, so every tap would land on the ad, and the taps skip
  * ads. The first time, it saves a screenshot of the ad. After an ad the wait starts again, so the
  * game gets the full `ms` to start. Returns how many ads it closed.
  */
